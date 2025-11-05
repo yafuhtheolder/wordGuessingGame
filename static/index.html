@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple Word Guess (Hangman)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Arial; padding: 18px; max-width: 720px; margin: auto; }
+    .card { padding: 14px; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,0.06); margin-bottom: 12px }
+    input[type="number"], input[type="text"] { padding: 8px; font-size: 16px; }
+    button { padding: 8px 12px; font-size: 15px; margin-left: 8px; cursor: pointer; }
+    #messages { margin-top: 12px }
+    .msg { padding: 10px; border-radius: 6px; margin-bottom: 8px; }
+    .success { background: #e6ffed; border: 1px solid #9be6b5; }
+    .error { background: #ffe6e6; border: 1px solid #f0a3a3; }
+    .info { background: #e6f0ff; border: 1px solid #99bff0; }
+    .warning { background: #fff7e6; border: 1px solid #f0d49b; }
+    #masked { font-size: 28px; letter-spacing: 6px; margin: 14px 0; }
+    #guessed { color: #444; margin-top: 6px; }
+    .meta { color: #666; font-size: 14px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h2>Simple Word Guess</h2>
+
+  <div class="card">
+    <strong>Start / Reset</strong><br><br>
+    <label>Allowed wrong guesses: <input id="turns" type="number" min="1" value="6" /></label>
+    <button id="startBtn">Start Game</button>
+    <button id="resetBtn">Reset</button>
+    <div class="meta">Session stored locally so you can reload the page.</div>
+  </div>
+
+  <div class="card">
+    <strong>Word</strong>
+    <div id="masked">_ _ _ _ _</div>
+    <div id="guessed">Guessed letters: (none)</div>
+    <div id="turnsLeft" class="meta">Turns left: 0</div>
+  </div>
+
+  <div class="card">
+    <strong>Make a Guess</strong><br><br>
+    <input id="guessInput" type="text" maxlength="1" placeholder="single letter" disabled />
+    <button id="guessBtn" disabled>Guess</button>
+    <div class="meta">Type a single letter (a–z) and press Guess or Enter.</div>
+  </div>
+
+  <div id="messages"></div>
+
+  <script>
+    function addMessage(text, level='info') {
+      const messages = document.getElementById('messages');
+      const d = document.createElement('div');
+      d.className = 'msg ' + level;
+      d.textContent = text;
+      messages.prepend(d);
+    }
+
+    function setUI(masked, turns, guessed) {
+      document.getElementById('masked').textContent = masked;
+      document.getElementById('turnsLeft').textContent = 'Turns left: ' + turns;
+      document.getElementById('guessed').textContent = 'Guessed letters: ' + (guessed.length ? guessed.join(', ') : '(none)');
+    }
+
+    let sessionId = localStorage.getItem('session_id') || null;
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const guessBtn = document.getElementById('guessBtn');
+    const guessInput = document.getElementById('guessInput');
+
+    startBtn.addEventListener('click', async () => {
+      const turns = parseInt(document.getElementById('turns').value, 10) || 6;
+      const res = await fetch('/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ turns, session_id: sessionId })
+      });
+      const j = await res.json();
+      if (j.session_id) {
+        sessionId = j.session_id;
+        localStorage.setItem('session_id', sessionId);
+      }
+      if (j.message) addMessage(j.message.text, j.message.level);
+      setUI(j.masked || '_', j.turns || 0, j.guessed || []);
+      if (j.message && j.message.level === 'success') {
+        guessInput.disabled = false;
+        guessBtn.disabled = false;
+        guessInput.focus();
+        guessInput.value = '';
+      }
+    });
+
+    guessBtn.addEventListener('click', doGuess);
+    guessInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doGuess();
+    });
+
+    async function doGuess() {
+      const g = guessInput.value.trim();
+      if (!g || g.length !== 1 || !/^[a-zA-Z]$/.test(g)) {
+        addMessage('Enter a single letter (a–z).', 'error');
+        return;
+      }
+      if (!sessionId) {
+        addMessage('No active session. Start a game first.', 'error');
+        return;
+      }
+      const res = await fetch('/guess', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ session_id: sessionId, guess_char: g })
+      });
+      const j = await res.json();
+      if (j.message) addMessage(j.message.text, j.message.level);
+      if (j.masked !== undefined) setUI(j.masked, j.turns || 0, j.guessed || []);
+      if (j.done) {
+        // game finished: disable guessing and forget session
+        guessInput.disabled = true;
+        guessBtn.disabled = true;
+        localStorage.removeItem('session_id');
+        sessionId = null;
+      } else {
+        guessInput.value = '';
+        guessInput.focus();
+      }
+    }
+
+    resetBtn.addEventListener('click', async () => {
+      await fetch('/reset', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ session_id: sessionId }) });
+      localStorage.removeItem('session_id');
+      sessionId = null;
+      guessInput.disabled = true;
+      guessBtn.disabled = true;
+      setUI('_ _ _ _ _', 0, []);
+      addMessage('Game reset locally.', 'warning');
+    });
+
+    // resume if session exists (basic)
+    if (sessionId) {
+      addMessage('Resuming existing session.', 'info');
+      // optional: call start with session_id to get current state
+      fetch('/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ session_id: sessionId })
+      }).then(r => r.json()).then(j => {
+        if (j.message) addMessage(j.message.text, j.message.level);
+        if (j.masked !== undefined) {
+          setUI(j.masked, j.turns || 0, j.guessed || []);
+          guessInput.disabled = false;
+          guessBtn.disabled = false;
+        }
+      }).catch(() => {});
+    }
+  </script>
+</body>
+</html>
